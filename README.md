@@ -68,9 +68,9 @@ src/zdplayer/
 
 ![ZD PLAYER ana ekran](assets/screenshots/zdplayer1.png)
 
-#### Oynatıcı
+#### Giriş Ekranı
 
-![ZD PLAYER oynatıcı ekranı](assets/screenshots/zdplayer2.png)
+![ZD PLAYER giriş ekranı](assets/screenshots/zdplayer2.png)
 
 ## English
 
@@ -138,6 +138,6 @@ src/zdplayer/
 
 ![ZD PLAYER main screen](assets/screenshots/zdplayer1.png)
 
-#### Player
+#### Login Screen
 
-![ZD PLAYER player screen](assets/screenshots/zdplayer2.png)
+![ZD PLAYER login screen](assets/screenshots/zdplayer2.png)

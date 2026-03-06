@@ -3,6 +3,12 @@
 Modern bir Linux IPTV oynatıcısı.  
 A modern IPTV player for Linux.
 
+> **Yasal Uyarı / Legal Notice**
+>
+> **Türkçe:** ZD PLAYER yalnızca bir IPTV oynatma istemcisidir. Bu proje herhangi bir yayın, kanal, medya içeriği, abonelik, hesap veya erişim bilgisi sağlamaz, barındırmaz, dağıtmaz ya da paylaşmaz. Uygulama yalnızca kullanıcının kendi yasal olarak yetkili olduğu Xtream API veya M3U kaynaklarını oynatmak için tasarlanmıştır. Kullanıcı tarafından eklenen içeriklerin, yayınların ve hesap bilgilerinin yasallığı ile kullanım sorumluluğu tamamen kullanıcıya aittir. Proje sahibi ve katkıda bulunanlar, kullanıcıların eklediği içeriklerden veya üçüncü taraf servislerin kullanımından doğan sonuçlar hakkında herhangi bir sorumluluk kabul etmez.
+>
+> **English:** ZD PLAYER is an IPTV playback client only. This project does not provide, host, distribute, or share any streams, channels, media content, subscriptions, accounts, or access credentials. The application is designed solely to play Xtream API or M3U sources that the user is legally authorized to access. The legality and use of all content, streams, and account credentials added by the user are the sole responsibility of the user. The project owner and contributors accept no liability for user-supplied content or for any consequences arising from the use of third-party services.
+
 ---
 
 ## Türkçe

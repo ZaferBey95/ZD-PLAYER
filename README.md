@@ -20,14 +20,14 @@ Linux Mint icin yerel bir Xtream API IPTV oynaticisi.
 ## Calistirma
 
 ```bash
-cd /home/zafer/mint-xtream-player
+git clone https://github.com/ZaferBey95/ZD-PLAYER.git
+cd ZD-PLAYER
 ./run.sh
 ```
 
 Alternatif:
 
 ```bash
-cd /home/zafer/mint-xtream-player
 PYTHONPATH=src python3 -m zdplayer
 ```
 

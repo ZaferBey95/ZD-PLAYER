@@ -1,23 +1,27 @@
 # ZD PLAYER
 
-Linux Mint icin yerel bir Xtream API IPTV oynaticisi.
+Türkçe ve English açıklamalar aşağıdadır.
 
-## Ozellikler
+## Türkçe
 
-- Birden fazla Xtream hesabi ekleme, duzenleme ve silme
-- Hesaplari JSON olarak yerelde saklama
-- `Canli TV`, `Filmler` ve `Diziler` sekmeleri
-- Her icerik turu icin kategori filtreleme ve arama
-- Dizilerde sezon ve bolum listeleme
-- GStreamer ile uygulama icinde oynatma
-- Modern kontrol cubugu: oynat/duraklat, durdur, tam ekran
-- Sag tik menusu ile ses izi ve altyazi secimi
-- Mouse tekerlek ile ses seviyesi ayarlama
-- Cift tiklama ile tam ekran gecisi
-- Video tam ekranda: kontroller otomatik gizlenme
-- Esc / F11 ile tam ekrandan cikis
+ZD PLAYER, Linux Mint için geliştirilmiş yerel bir IPTV oynatıcıdır. Xtream API ve M3U oynatma listelerini destekler.
 
-## Calistirma
+### Özellikler
+
+- Birden fazla Xtream hesabı ekleme, düzenleme ve silme
+- Hesapları JSON olarak yerelde saklama
+- `Canlı TV`, `Filmler` ve `Diziler` sekmeleri
+- Her içerik türü için kategori filtreleme ve arama
+- Dizilerde sezon ve bölüm listeleme
+- GStreamer ile uygulama içinde oynatma
+- Modern kontrol çubuğu: oynat/duraklat, durdur, tam ekran
+- Sağ tık menüsü ile ses izi ve altyazı seçimi
+- Mouse tekerleği ile ses seviyesi ayarlama
+- Çift tıklama ile tam ekran geçişi
+- Video tam ekranda iken kontrollerin otomatik gizlenmesi
+- `Esc` / `F11` ile tam ekrandan çıkış
+
+### Çalıştırma
 
 ```bash
 git clone https://github.com/ZaferBey95/ZD-PLAYER.git
@@ -31,39 +35,109 @@ Alternatif:
 PYTHONPATH=src python3 -m zdplayer
 ```
 
-## Mimari
+### Mimari
 
-```
+```text
 src/zdplayer/
   models.py      - Hesap, kategori, katalog, dizi ve profil modelleri
-  storage.py     - Hesaplarin yerel kaliciligi
+  storage.py     - Hesapların yerel kalıcılığı
   xtream.py      - Xtream API istemcisi
-  app.py         - Uygulama giris noktasi
+  app.py         - Uygulama giriş noktası
   ui/
-    __init__.py  - Paket exportlari
-    css.py       - Modern GTK3 temasi
-    helpers.py   - Yardimci fonksiyonlar
-    dialogs.py   - Hesap ekleme/duzenleme dialoglari
-    sidebar.py   - Hesap ozeti, icerik tipi secici, kategori listesi
-    browser.py   - Arama ve icerik listesi
-    player.py    - GStreamer video oynatici ve kontroller
-    detail.py    - Secili icerik detaylari ve dizi paneli
-    window.py    - Ana pencere (orkestrator)
+    __init__.py  - Paket dışa aktarımları
+    css.py       - GTK3 tema stilleri
+    helpers.py   - Yardımcı fonksiyonlar
+    dialogs.py   - Hesap ekleme / düzenleme pencereleri
+    sidebar.py   - Hesap özeti, içerik tipi seçici ve kategori listesi
+    browser.py   - Arama ve içerik listesi
+    player.py    - GStreamer oynatıcı ve kontroller
+    detail.py    - Seçili içerik detayları ve dizi paneli
+    window.py    - Ana pencere
 ```
 
-## Notlar
+### Notlar
 
-- Hesap bilgileri `~/.local/share/zdplayer/state.json` altinda tutulur.
-- Canli TV cikisi icin bazi saglayicilar `m3u8`, bazilari `ts` ister.
-- Ses ve altyazi secimi, akista ilgili track bilgisi varsa sag tik menusuyle yapilir.
-- Video uzerinde mouse tekerlek ile ses seviyesi ayarlanir.
+- Hesap bilgileri `~/.local/share/zdplayer/state.json` içinde tutulur.
+- Canlı TV çıkışı için bazı sağlayıcılar `m3u8`, bazıları `ts` ister.
+- Ses ve altyazı seçimi, akışta ilgili track bilgisi varsa sağ tık menüsüyle yapılır.
+- Video üzerinde mouse tekerleği ile ses seviyesi ayarlanabilir.
 
-## Ekran Goruntuleri
+### Ekran Görüntüleri
 
-### Ana Ekran
+#### Ana Ekran
 
 ![ZD PLAYER ana ekran](assets/screenshots/zdplayer1.png)
 
-### Oynatici
+#### Oynatıcı
 
-![ZD PLAYER oynatici ekrani](assets/screenshots/zdplayer2.png)
+![ZD PLAYER oynatıcı ekranı](assets/screenshots/zdplayer2.png)
+
+## English
+
+ZD PLAYER is a local IPTV player built for Linux Mint. It supports Xtream API accounts and M3U playlists.
+
+### Features
+
+- Add, edit, and remove multiple Xtream accounts
+- Store accounts locally in JSON format
+- Dedicated `Live TV`, `Movies`, and `Series` sections
+- Category filtering and search for each content type
+- Season and episode browsing for series
+- In-app playback powered by GStreamer
+- Modern control bar with play/pause, stop, and fullscreen
+- Audio track and subtitle selection via right-click menu
+- Mouse wheel volume control
+- Double-click fullscreen toggle
+- Auto-hiding controls in fullscreen mode
+- Exit fullscreen with `Esc` or `F11`
+
+### Run
+
+```bash
+git clone https://github.com/ZaferBey95/ZD-PLAYER.git
+cd ZD-PLAYER
+./run.sh
+```
+
+Alternative:
+
+```bash
+PYTHONPATH=src python3 -m zdplayer
+```
+
+### Architecture
+
+```text
+src/zdplayer/
+  models.py      - Account, category, catalog, series, and profile models
+  storage.py     - Local account persistence
+  xtream.py      - Xtream API client
+  app.py         - Application entry point
+  ui/
+    __init__.py  - Package exports
+    css.py       - GTK3 theme styling
+    helpers.py   - Helper utilities
+    dialogs.py   - Account add / edit dialogs
+    sidebar.py   - Account summary, content type selector, and category list
+    browser.py   - Search and content list
+    player.py    - GStreamer player and controls
+    detail.py    - Selected content details and series panel
+    window.py    - Main window
+```
+
+### Notes
+
+- Account data is stored in `~/.local/share/zdplayer/state.json`.
+- Some providers expect `m3u8` output for live TV, while others require `ts`.
+- Audio and subtitle selection is available from the right-click menu when the stream exposes those tracks.
+- Volume can be adjusted with the mouse wheel over the video area.
+
+### Screenshots
+
+#### Main Screen
+
+![ZD PLAYER main screen](assets/screenshots/zdplayer1.png)
+
+#### Player
+
+![ZD PLAYER player screen](assets/screenshots/zdplayer2.png)

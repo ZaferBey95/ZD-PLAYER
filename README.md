@@ -57,3 +57,13 @@ src/zdplayer/
 - Canli TV cikisi icin bazi saglayicilar `m3u8`, bazilari `ts` ister.
 - Ses ve altyazi secimi, akista ilgili track bilgisi varsa sag tik menusuyle yapilir.
 - Video uzerinde mouse tekerlek ile ses seviyesi ayarlanir.
+
+## Ekran Goruntuleri
+
+### Ana Ekran
+
+![ZD PLAYER ana ekran](assets/screenshots/zdplayer1.png)
+
+### Oynatici
+
+![ZD PLAYER oynatici ekrani](assets/screenshots/zdplayer2.png)

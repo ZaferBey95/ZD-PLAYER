@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=ZD PLAYER
+Comment=IPTV Player - Xtream & M3U
+Comment[tr]=IPTV Oynatıcı - Xtream & M3U
+Exec=zdplayer
+Icon=com.zdplayer
+Terminal=false
+Type=Application
+Categories=AudioVideo;Video;Player;TV;
+Keywords=iptv;player;tv;streaming;m3u;xtream;
+StartupNotify=true

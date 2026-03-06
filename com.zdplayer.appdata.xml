@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.zdplayer</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>ZD PLAYER</name>
+  <summary>IPTV Player - Xtream &amp; M3U</summary>
+  <description>
+    <p>
+      ZD PLAYER is an IPTV player application for Linux. It supports Xtream API
+      and M3U playlist formats. It does not host or provide any content.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Xtream API and M3U playlist support</li>
+      <li>Live TV, Movies and Series playback</li>
+      <li>Multi-language interface (8 languages)</li>
+      <li>Color balance, deinterlace and buffer settings</li>
+      <li>Audio track and subtitle selection</li>
+      <li>Fullscreen mode with overlay controls</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">com.zdplayer.desktop</launchable>
+  <url type="homepage">https://github.com/zfrdemir/zd-player</url>
+  <url type="bugtracker">https://github.com/zfrdemir/zd-player/issues</url>
+  <url type="contact">mailto:zfrdmr@protonmail.com</url>
+  <developer_name>Zafer Demir</developer_name>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.0" date="2026-03-06">
+      <description>
+        <p>Initial release</p>
+      </description>
+    </release>
+  </releases>
+</component>

@@ -57,6 +57,10 @@ class MainWindow(Gtk.ApplicationWindow):
         self.series_token = 0
         self.ignore_combo = False
         self._autoplay_done = False
+        self._pending_series_id: str | None = None
+        self._pending_episode_id: str | None = None
+        self._current_entry_id: str | None = None
+        self._current_episode_id: str | None = None
 
         self._build_ui()
         self._load_saved_accounts()
@@ -75,6 +79,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self.player = PlayerWidget(
             on_error=self._on_player_error,
             on_eos=self._on_player_eos,
+            on_prev_item=self._on_prev_item,
+            on_next_item=self._on_next_item,
         )
         self.player.empty_btn.connect("clicked", self._on_manage_clicked)
         paned.pack1(self.player, resize=True, shrink=False)
@@ -169,6 +175,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self._show_error(str(exc))
 
         self.accounts = accounts
+        self._sync_account_settings()
         ids = {a.id for a in accounts}
         if last_id in ids:
             self.active_account_id = last_id
@@ -223,12 +230,36 @@ class MainWindow(Gtk.ApplicationWindow):
         self.panel.set_loading()
         self.player.show_empty(t("add_account"), t("add_account_sub"), show_btn=True)
         self._update_np()
+        self._current_entry_id = None
+        self._current_episode_id = None
 
     def _invalidate_cache(self) -> None:
         self.categories_by_type = {k: [] for k in CONTENT_TYPES}
         self.entries_by_type = {k: [] for k in CONTENT_TYPES}
         self.catalog_loaded = {k: False for k in CONTENT_TYPES}
         self.series_info_cache.clear()
+        self._autoplay_done = False
+        self._clear_pending_series_autoplay()
+
+    def _sync_account_settings(self) -> bool:
+        settings = get_settings()
+        changed = False
+        for account in self.accounts:
+            if account.output != settings.live_output:
+                account.output = settings.live_output
+                changed = True
+            if account.verify_tls != settings.verify_tls:
+                account.verify_tls = settings.verify_tls
+                changed = True
+        return changed
+
+    def _set_pending_series_autoplay(self, series_id: str, episode_id: str) -> None:
+        self._pending_series_id = series_id
+        self._pending_episode_id = episode_id
+
+    def _clear_pending_series_autoplay(self) -> None:
+        self._pending_series_id = None
+        self._pending_episode_id = None
 
     # ── Catalog loading ──
 
@@ -279,7 +310,7 @@ class MainWindow(Gtk.ApplicationWindow):
             GLib.idle_add(self._catalog_done, token, account.id, ct, profile, [], [])
             return
         try:
-            cats, entries = m3u_fetch(account.m3u_url)
+            cats, entries = m3u_fetch(account.m3u_url, verify_tls=account.verify_tls)
         except M3UError as exc:
             GLib.idle_add(self._catalog_error, token, account.id, ct, str(exc))
             return
@@ -316,6 +347,20 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         if settings.last_channel_type != ct:
             return
+
+        if ct == "series":
+            target_series_id = settings.last_series_id or settings.last_channel_id
+            if not target_series_id:
+                return
+            for entry in entries:
+                if entry.id != target_series_id:
+                    continue
+                if settings.last_series_id and settings.last_channel_id:
+                    self._load_series(entry, autoplay_episode_id=settings.last_channel_id)
+                else:
+                    self._load_series(entry)
+                return
+
         for entry in entries:
             if entry.id == settings.last_channel_id:
                 self._play_entry(entry)
@@ -345,9 +390,15 @@ class MainWindow(Gtk.ApplicationWindow):
 
     # ── Series loading ──
 
-    def _load_series(self, entry: CatalogEntry) -> None:
+    def _load_series(self, entry: CatalogEntry, *, autoplay_episode_id: str | None = None) -> None:
+        if autoplay_episode_id:
+            self._set_pending_series_autoplay(entry.id, autoplay_episode_id)
+        else:
+            self._clear_pending_series_autoplay()
         if entry.id in self.series_info_cache:
-            self.panel.enter_series(self.series_info_cache[entry.id])
+            info = self.series_info_cache[entry.id]
+            self.panel.enter_series(info)
+            self._maybe_autoplay_series_episode(entry.id, info)
             return
         account = self._active_account()
         if not account:
@@ -375,14 +426,28 @@ class MainWindow(Gtk.ApplicationWindow):
         if token != self.series_token:
             return False
         self.panel.enter_series(info)
+        self._maybe_autoplay_series_episode(sid, info)
         return False
 
     def _series_error(self, token: int, aid: str, sid: str, msg: str) -> bool:
         if token != self.series_token or aid != self.active_account_id:
             return False
+        if self._pending_series_id == sid:
+            self._clear_pending_series_autoplay()
         self.panel.show_series_error(msg)
         self._show_error(msg)
         return False
+
+    def _maybe_autoplay_series_episode(self, series_id: str, info: SeriesInfo) -> None:
+        if self._pending_series_id != series_id or not self._pending_episode_id:
+            return
+        episode_id = self._pending_episode_id
+        episode = self.panel.select_episode(episode_id)
+        if episode is None:
+            episode = info.find_episode(episode_id)
+        self._clear_pending_series_autoplay()
+        if episode is not None:
+            self._play_episode(episode)
 
     # ── Events ──
 
@@ -405,6 +470,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 return
             self.accounts = dlg.accounts
             self.active_account_id = dlg.active_account_id
+            self._sync_account_settings()
             self._persist()
             if not self.accounts:
                 self._rebuild_combo()
@@ -424,6 +490,8 @@ class MainWindow(Gtk.ApplicationWindow):
         try:
             if dlg.run() == Gtk.ResponseType.OK and dlg.result_settings:
                 save_settings(dlg.result_settings)
+                if self._sync_account_settings():
+                    self._persist()
                 # Apply volume immediately
                 vol = dlg.result_settings.default_volume / 100
                 self.player.set_default_volume(vol)
@@ -453,14 +521,39 @@ class MainWindow(Gtk.ApplicationWindow):
     def _on_player_eos(self) -> None:
         self._update_np(t("stream_ended"))
 
+    def _on_prev_item(self) -> None:
+        self._play_adjacent_item(-1)
+
+    def _on_next_item(self) -> None:
+        self._play_adjacent_item(1)
+
+    def _play_adjacent_item(self, step: int) -> None:
+        if self._current_episode_id:
+            episode = self.panel.adjacent_episode(self._current_episode_id, step)
+            if episode is not None:
+                self._play_episode(episode)
+            return
+
+        if self._current_entry_id:
+            entry = self.panel.adjacent_entry(self._current_entry_id, step)
+            if entry is not None:
+                self._play_entry(entry)
+
     # ── Playback ──
 
-    def _save_last_channel(self, entry_id: str, content_type: str) -> None:
+    def _save_last_channel(
+        self,
+        entry_id: str,
+        content_type: str,
+        *,
+        series_id: str = "",
+    ) -> None:
         settings = get_settings()
         if not settings.remember_last_channel:
             return
         settings.last_channel_id = entry_id
         settings.last_channel_type = content_type
+        settings.last_series_id = series_id
         settings.last_account_id = self.active_account_id or ""
         save_settings(settings)
 
@@ -476,6 +569,9 @@ class MainWindow(Gtk.ApplicationWindow):
         labels = content_labels()
         self.player.play(uri, entry.name, labels[entry.content_type])
         self._update_np(entry.name)
+        self._current_entry_id = entry.id
+        self._current_episode_id = None
+        self.panel.select_entry(entry.id)
         self._save_last_channel(entry.id, entry.content_type)
 
     def _play_episode(self, ep: SeriesEpisode) -> None:
@@ -489,6 +585,10 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         self.player.play(uri, ep.title, ep.meta_line)
         self._update_np(ep.title)
+        self._current_entry_id = None
+        self._current_episode_id = ep.id
+        self.panel.select_episode(ep.id)
+        self._save_last_channel(ep.id, "series", series_id=ep.series_id)
 
     # ── Helpers ──
 

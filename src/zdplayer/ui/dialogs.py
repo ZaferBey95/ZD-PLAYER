@@ -8,6 +8,7 @@ from gi.repository import Gtk, Pango
 
 from ..i18n import t
 from ..models import XtreamAccount
+from ..settings import get_settings
 from .helpers import clear_listbox, make_label, suggest_account_name
 
 
@@ -153,6 +154,11 @@ class AccountEditorDialog(Gtk.Dialog):
 
     def _build_account(self) -> XtreamAccount:
         account_type = self._type_combo.get_active_id() or "xtream"
+        settings = get_settings()
+        output = self._existing_account.output if self._existing_account else settings.live_output
+        verify_tls = (
+            self._existing_account.verify_tls if self._existing_account else settings.verify_tls
+        )
 
         if account_type == "m3u":
             m3u_url = self.m3u_entry.get_text().strip()
@@ -162,11 +168,16 @@ class AccountEditorDialog(Gtk.Dialog):
 
             if self._existing_account is None:
                 return XtreamAccount.create(
-                    name=name, account_type="m3u", m3u_url=m3u_url,
+                    name=name,
+                    account_type="m3u",
+                    m3u_url=m3u_url,
+                    verify_tls=verify_tls,
                 )
             return XtreamAccount(
                 id=self._existing_account.id,
                 name=name, server="", username="", password="",
+                output=output,
+                verify_tls=verify_tls,
                 account_type="m3u", m3u_url=m3u_url,
             )
 
@@ -188,12 +199,16 @@ class AccountEditorDialog(Gtk.Dialog):
             account = XtreamAccount.create(
                 name=name, server=server, username=username,
                 password=password,
+                output=output,
+                verify_tls=verify_tls,
             )
         else:
             account = XtreamAccount(
                 id=self._existing_account.id,
                 name=name, server=server, username=username,
                 password=password,
+                output=output,
+                verify_tls=verify_tls,
             )
         _ = account.normalized_server
         return account

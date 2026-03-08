@@ -27,6 +27,11 @@
   <developer_name>Zafer Demir</developer_name>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.1" date="2026-03-08">
+      <description>
+        <p>Playback controls refined, fullscreen navigation improved, and playback behavior fixes applied.</p>
+      </description>
+    </release>
     <release version="1.0" date="2026-03-06">
       <description>
         <p>Initial release</p>

@@ -22,12 +22,16 @@ def _parse_extinf_attrs(raw: str) -> dict[str, str]:
 
 
 def fetch_and_parse(
-    url: str, *, timeout: int = 30
+    url: str,
+    *,
+    timeout: int = 30,
+    verify_tls: bool = True,
 ) -> tuple[list[MediaCategory], list[CatalogEntry]]:
     try:
         resp = requests.get(
             url, timeout=timeout,
             headers={"User-Agent": "ZD PLAYER"},
+            verify=verify_tls,
         )
         resp.raise_for_status()
         text = resp.text

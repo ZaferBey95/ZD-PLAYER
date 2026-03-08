@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="com.zdplayer",
-    version="1.0",
+    version="1.1",
     description="ZD PLAYER - IPTV Player",
     author="Zafer Demir",
     author_email="zfrdmr@protonmail.com",

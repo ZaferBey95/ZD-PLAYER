@@ -49,7 +49,7 @@ Kısa özet:
 Debian tabanlı sistemlerde:
 
 ```bash
-sudo apt install ./com.zdplayer_1.0_all.deb
+sudo apt install ./com.zdplayer_1.1_all.deb
 ```
 
 Kurulumdan sonra uygulama menüsünde `ZD PLAYER` olarak görünür.
@@ -150,7 +150,7 @@ Short summary:
 On Debian-based systems:
 
 ```bash
-sudo apt install ./com.zdplayer_1.0_all.deb
+sudo apt install ./com.zdplayer_1.1_all.deb
 ```
 
 After installation, the app appears in the application menu as `ZD PLAYER`.

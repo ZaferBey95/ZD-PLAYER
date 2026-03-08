@@ -4,7 +4,7 @@ set -euo pipefail
 APP_NAME="com.zdplayer"
 APP_ID="com.zdplayer"
 BIN_NAME="zdplayer"
-VERSION="1.0"
+VERSION="1.1"
 ARCH="all"
 PKG_DIR="${APP_NAME}_${VERSION}_${ARCH}"
 STAGE_LIB_DIR="$PKG_DIR/usr/lib/zdplayer"

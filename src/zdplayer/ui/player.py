@@ -16,6 +16,7 @@ from .helpers import make_icon_button, make_label
 SEEK_STEP_NS = 10 * Gst.SECOND  # 10 seconds
 POSITION_POLL_MS = 500
 SEEK_DEBOUNCE_MS = 80
+SEEK_DISPLAY_GRACE_US = 900_000
 
 BUFFER_DURATIONS = {
     "low": 1 * Gst.SECOND,
@@ -42,16 +43,21 @@ class PlayerWidget(Gtk.Box):
         *,
         on_error: Callable[[str], None] | None = None,
         on_eos: Callable[[], None] | None = None,
+        on_prev_item: Callable[[], None] | None = None,
+        on_next_item: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self._on_error = on_error
         self._on_eos = on_eos
+        self._on_prev_item = on_prev_item
+        self._on_next_item = on_next_item
 
         self._current_title: str | None = None
         self._current_meta: str | None = None
         self._paused = False
         self._fullscreen = False
         self._volume = 0.75
+        self._last_nonzero_volume = self._volume
         self._vol_popup_timer = 0
         self._track_gen = 0
         self._ignore_track = False
@@ -62,6 +68,9 @@ class PlayerWidget(Gtk.Box):
         self._position_timer = 0
         self._seek_pending_timer = 0
         self._seek_target_ns: int = -1
+        self._pending_seek_display_ns: int = -1
+        self._pending_seek_deadline_us: int = 0
+        self._measured_fps_text = ""
 
         # Color balance (range: -1.0 to 1.0, default 0.0)
         _s = get_settings()
@@ -71,6 +80,8 @@ class PlayerWidget(Gtk.Box):
         self._hue = _s.color_hue
 
         self._fs_window: Gtk.Window | None = None
+        self._fs_accel_group: Gtk.AccelGroup | None = None
+        self._fs_event_box: Gtk.EventBox | None = None
         self._fs_video_box: Gtk.Box | None = None
         self._fs_controls_revealer: Gtk.Revealer | None = None
         self._fs_title: Gtk.Label | None = None
@@ -78,6 +89,20 @@ class PlayerWidget(Gtk.Box):
         self._fs_seek_scale: Gtk.Scale | None = None
         self._fs_time_current: Gtk.Label | None = None
         self._fs_time_total: Gtk.Label | None = None
+        self._fs_pp_btn: Gtk.Button | None = None
+        self._vol_icon: Gtk.Image | None = None
+        self._fs_vol_icon: Gtk.Image | None = None
+        self._vol_button: Gtk.Button | None = None
+        self._fs_vol_button: Gtk.Button | None = None
+        self._vol_popover: Gtk.Popover | None = None
+        self._fs_vol_popover: Gtk.Popover | None = None
+        self._vol_scale: Gtk.Scale | None = None
+        self._fs_vol_scale: Gtk.Scale | None = None
+        self._vol_popover_icon: Gtk.Image | None = None
+        self._fs_vol_popover_icon: Gtk.Image | None = None
+        self._vol_popover_value: Gtk.Label | None = None
+        self._fs_vol_popover_value: Gtk.Label | None = None
+        self._ignore_volume_scale = False
 
         self._init_gst()
         self._build()
@@ -87,8 +112,15 @@ class PlayerWidget(Gtk.Box):
     def _init_gst(self) -> None:
         self.playbin = Gst.ElementFactory.make("playbin", "player")
         self.video_sink = Gst.ElementFactory.make("gtksink", "vsink")
+        self._fps_sink = Gst.ElementFactory.make("fpsdisplaysink", "fpssink")
         if not self.playbin or not self.video_sink:
             raise RuntimeError("GStreamer player could not be created.")
+        if self._fps_sink:
+            self._fps_sink.set_property("text-overlay", False)
+            self._fps_sink.set_property("video-sink", self.video_sink)
+            self._fps_sink.set_property("signal-fps-measurements", True)
+            self._fps_sink.set_property("fps-update-interval", 750)
+            self._fps_sink.connect("fps-measurements", self._on_fps_measurements)
 
         self._videobalance = Gst.ElementFactory.make("videobalance", "vbalance")
         self._build_video_pipeline()
@@ -96,6 +128,7 @@ class PlayerWidget(Gtk.Box):
         self.playbin.set_property("volume", self._volume)
         self.playbin.connect("source-setup", self._on_source_setup)
         self.video_widget = self.video_sink.props.widget
+        self._configure_video_widget()
         self.video_widget.set_hexpand(True)
         self.video_widget.set_vexpand(True)
 
@@ -112,6 +145,7 @@ class PlayerWidget(Gtk.Box):
         mode = settings.deinterlace
 
         elements: list[Gst.Element] = []
+        terminal_sink = self._fps_sink or self.video_sink
 
         # Deinterlace
         if mode != "off":
@@ -128,16 +162,16 @@ class PlayerWidget(Gtk.Box):
             elements.append(self._videobalance)
 
         if not elements:
-            self.playbin.set_property("video-sink", self.video_sink)
+            self.playbin.set_property("video-sink", terminal_sink)
             return
 
         vbin = Gst.Bin.new("vsinkbin")
         for el in elements:
             vbin.add(el)
-        vbin.add(self.video_sink)
+        vbin.add(terminal_sink)
 
-        # Link chain: elements... -> video_sink
-        chain = elements + [self.video_sink]
+        # Link chain: elements... -> terminal sink
+        chain = elements + [terminal_sink]
         for i in range(len(chain) - 1):
             chain[i].link(chain[i + 1])
 
@@ -146,6 +180,19 @@ class PlayerWidget(Gtk.Box):
         vbin.add_pad(ghost)
 
         self.playbin.set_property("video-sink", vbin)
+
+    def _configure_video_widget(self) -> None:
+        if self.video_widget is None:
+            return
+        if hasattr(self.video_widget, "set_can_focus"):
+            self.video_widget.set_can_focus(True)
+        if hasattr(self.video_widget, "add_events"):
+            self.video_widget.add_events(
+                Gdk.EventMask.KEY_PRESS_MASK | Gdk.EventMask.BUTTON_PRESS_MASK
+            )
+        if hasattr(self.video_widget, "connect"):
+            self.video_widget.connect("key-press-event", self._on_playback_key)
+            self.video_widget.connect("button-press-event", self._on_video_button_press)
 
     # ── UI build ──
 
@@ -187,12 +234,15 @@ class PlayerWidget(Gtk.Box):
         overlay = Gtk.Overlay()
         self._event_box = Gtk.EventBox()
         self._event_box.add_events(
-            Gdk.EventMask.SCROLL_MASK
+            Gdk.EventMask.KEY_PRESS_MASK
+            | Gdk.EventMask.SCROLL_MASK
             | Gdk.EventMask.BUTTON_PRESS_MASK
             | Gdk.EventMask.POINTER_MOTION_MASK
         )
+        self._event_box.set_can_focus(True)
         self._event_box.connect("scroll-event", self._on_scroll)
-        self._event_box.connect("button-press-event", self._on_button_press)
+        self._event_box.connect("button-press-event", self._on_video_button_press)
+        self._event_box.connect("key-press-event", self._on_playback_key)
 
         self._video_shell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self._video_shell.get_style_context().add_class("video-area")
@@ -215,6 +265,43 @@ class PlayerWidget(Gtk.Box):
         # Control bar
         self._build_controls()
         self.stack.set_visible_child_name("empty")
+
+    def _build_volume_popover(
+        self, relative_to: Gtk.Widget
+    ) -> tuple[Gtk.Popover, Gtk.Scale, Gtk.Image, Gtk.Label]:
+        popover = Gtk.Popover.new(relative_to)
+        popover.set_position(Gtk.PositionType.TOP)
+        popover.get_style_context().add_class("volume-popover")
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.get_style_context().add_class("vol-popover-box")
+        box.set_border_width(12)
+
+        head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        head.get_style_context().add_class("vol-popover-head")
+
+        icon = Gtk.Image.new_from_icon_name(self._volume_icon_name(), Gtk.IconSize.MENU)
+        icon.get_style_context().add_class("vol-popover-icon")
+        head.pack_start(icon, False, False, 0)
+
+        title = make_label(t("volume_control"), css="vol-popover-title")
+        head.pack_start(title, True, True, 0)
+
+        value = make_label(self._vol_text(), css="vol-popover-value", xalign=1.0)
+        head.pack_start(value, False, False, 0)
+        box.pack_start(head, False, False, 0)
+
+        scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 150, 1)
+        scale.set_draw_value(False)
+        scale.set_hexpand(True)
+        scale.set_size_request(196, -1)
+        scale.get_style_context().add_class("settings-scale")
+        scale.get_style_context().add_class("volume-scale")
+        scale.connect("value-changed", self._on_volume_scale_changed)
+        box.pack_start(scale, False, False, 0)
+
+        popover.add(box)
+        return popover, scale, icon, value
 
     def _build_seek_bar(self) -> None:
         seek_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -240,7 +327,7 @@ class PlayerWidget(Gtk.Box):
         seek_row.pack_start(self.time_total, False, False, 0)
 
     def _build_controls(self) -> None:
-        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         bar.get_style_context().add_class("control-bar")
         bar.set_margin_top(4)
         bar.set_margin_start(4)
@@ -248,37 +335,56 @@ class PlayerWidget(Gtk.Box):
         bar.set_margin_bottom(4)
         self.pack_start(bar, False, False, 0)
 
-        self.btn_rew = make_icon_button(
-            "media-seek-backward-symbolic", t("skip_back"), css="ctrl-btn",
+        transport = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        transport.get_style_context().add_class("ctrl-cluster")
+        transport.get_style_context().add_class("ctrl-cluster-transport")
+        bar.pack_start(transport, False, False, 0)
+
+        self.btn_prev = make_icon_button(
+            "media-skip-backward-symbolic", t("previous_content"), css="ctrl-btn-nav",
         )
-        self.btn_rew.connect("clicked", self._on_skip_back)
-        bar.pack_start(self.btn_rew, False, False, 0)
+        self.btn_prev.connect("clicked", self._on_prev_item_click)
+        transport.pack_start(self.btn_prev, False, False, 0)
+
+        self.btn_seek_back = make_icon_button(
+            "media-seek-backward-symbolic",
+            t("skip_back_short"),
+            css="ctrl-btn-small",
+            size=Gtk.IconSize.MENU,
+        )
+        self.btn_seek_back.connect("clicked", self._on_skip_back)
+        transport.pack_start(self.btn_seek_back, False, False, 0)
 
         self.btn_play = make_icon_button(
             "media-playback-start-symbolic", t("play_pause"), css="ctrl-btn-accent",
         )
         self.btn_play.connect("clicked", self._on_play_pause)
-        bar.pack_start(self.btn_play, False, False, 0)
+        transport.pack_start(self.btn_play, False, False, 0)
 
-        self.btn_fwd = make_icon_button(
-            "media-seek-forward-symbolic", t("skip_forward"), css="ctrl-btn",
+        self.btn_seek_fwd = make_icon_button(
+            "media-seek-forward-symbolic",
+            t("skip_forward_short"),
+            css="ctrl-btn-small",
+            size=Gtk.IconSize.MENU,
         )
-        self.btn_fwd.connect("clicked", self._on_skip_forward)
-        bar.pack_start(self.btn_fwd, False, False, 0)
+        self.btn_seek_fwd.connect("clicked", self._on_skip_forward)
+        transport.pack_start(self.btn_seek_fwd, False, False, 0)
+
+        self.btn_next = make_icon_button(
+            "media-skip-forward-symbolic", t("next_content"), css="ctrl-btn-nav",
+        )
+        self.btn_next.connect("clicked", self._on_next_item_click)
+        transport.pack_start(self.btn_next, False, False, 0)
 
         self.btn_stop = make_icon_button(
             "media-playback-stop-symbolic", t("stop"), css="ctrl-btn",
         )
         self.btn_stop.connect("clicked", self._on_stop_click)
-        bar.pack_start(self.btn_stop, False, False, 0)
-
-        sep = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
-        sep.set_margin_top(6)
-        sep.set_margin_bottom(6)
-        bar.pack_start(sep, False, False, 4)
+        transport.pack_start(self.btn_stop, False, False, 0)
 
         titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
         titles.set_valign(Gtk.Align.CENTER)
+        titles.get_style_context().add_class("ctrl-title-block")
         self.ctrl_title = make_label(t("app_name"), css="ctrl-title", ellipsize=True)
         self.ctrl_meta = make_label(t("waiting_content"), css="ctrl-meta", ellipsize=True)
         titles.pack_start(self.ctrl_title, False, False, 0)
@@ -288,6 +394,7 @@ class PlayerWidget(Gtk.Box):
         # Stream stats
         stats_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         stats_box.set_valign(Gtk.Align.CENTER)
+        stats_box.get_style_context().add_class("stats-cluster")
         self._res_label = make_label("", css="stream-stat")
         self._fps_label = make_label("", css="stream-stat")
         self._bitrate_label = make_label("", css="stream-stat")
@@ -296,19 +403,40 @@ class PlayerWidget(Gtk.Box):
         stats_box.pack_start(self._bitrate_label, False, False, 0)
         bar.pack_start(stats_box, False, False, 4)
 
-        sep2 = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
-        sep2.set_margin_top(6)
-        sep2.set_margin_bottom(6)
-        bar.pack_start(sep2, False, False, 2)
+        utility = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        utility.get_style_context().add_class("ctrl-cluster")
+        utility.get_style_context().add_class("ctrl-cluster-utility")
+        bar.pack_start(utility, False, False, 0)
 
+        vol_button = Gtk.Button()
+        vol_button.get_style_context().add_class("vol-chip-btn")
+        vol_button.set_tooltip_text(t("volume_control"))
+        vol_button.connect("clicked", self._on_volume_chip_click)
+        self._vol_button = vol_button
+
+        vol_chip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        vol_chip.get_style_context().add_class("vol-chip")
+        self._vol_icon = Gtk.Image.new_from_icon_name(
+            self._volume_icon_name(), Gtk.IconSize.MENU
+        )
+        self._vol_icon.get_style_context().add_class("vol-chip-icon")
+        vol_chip.pack_start(self._vol_icon, False, False, 0)
         self.vol_label = make_label(self._vol_text(), css="vol-label")
-        bar.pack_start(self.vol_label, False, False, 4)
+        vol_chip.pack_start(self.vol_label, False, False, 0)
+        vol_button.add(vol_chip)
+        utility.pack_start(vol_button, False, False, 0)
+        (
+            self._vol_popover,
+            self._vol_scale,
+            self._vol_popover_icon,
+            self._vol_popover_value,
+        ) = self._build_volume_popover(vol_button)
 
         self.btn_fs = make_icon_button(
-            "view-fullscreen-symbolic", t("fullscreen"), css="ctrl-btn",
+            "view-fullscreen-symbolic", t("fullscreen"), css="ctrl-btn-utility",
         )
         self.btn_fs.connect("clicked", self._on_fs_click)
-        bar.pack_start(self.btn_fs, False, False, 0)
+        utility.pack_start(self.btn_fs, False, False, 0)
 
         self._set_controls_sensitive(False)
 
@@ -316,14 +444,16 @@ class PlayerWidget(Gtk.Box):
         self.btn_play.set_sensitive(on)
         self.btn_stop.set_sensitive(on)
         self.btn_fs.set_sensitive(on)
-        self.btn_rew.set_sensitive(on)
-        self.btn_fwd.set_sensitive(on)
+        self.btn_prev.set_sensitive(on)
+        self.btn_next.set_sensitive(on)
+        self.btn_seek_back.set_sensitive(on)
+        self.btn_seek_fwd.set_sensitive(on)
         self.seek_scale.set_sensitive(on)
 
     # ── Stream stats ──
 
     def _update_stream_stats(self) -> None:
-        fps_text = ""
+        fps_text = self._measured_fps_text
         bitrate_text = ""
         res_text = ""
         try:
@@ -335,9 +465,9 @@ class PlayerWidget(Gtk.Box):
                     if caps and caps.get_size() > 0:
                         st = caps.get_structure(0)
                         ok, num, den = st.get_fraction("framerate")
-                        if ok and den > 0:
+                        if not fps_text and ok and den > 0:
                             fps = num / den
-                            fps_text = f"{fps:.0f} FPS"
+                            fps_text = self._format_fps_text(fps)
                         ok, w = st.get_int("width")
                         ok2, h = st.get_int("height")
                         if ok and ok2 and w > 0 and h > 0:
@@ -373,6 +503,7 @@ class PlayerWidget(Gtk.Box):
             self._fs_bitrate_label.set_text(bitrate_text)
 
     def _clear_stream_stats(self) -> None:
+        self._measured_fps_text = ""
         self._res_label.set_text("")
         self._fps_label.set_text("")
         self._bitrate_label.set_text("")
@@ -380,6 +511,36 @@ class PlayerWidget(Gtk.Box):
             self._fs_res_label.set_text("")
             self._fs_fps_label.set_text("")
             self._fs_bitrate_label.set_text("")
+
+    def _format_fps_text(self, fps: float) -> str:
+        if fps <= 0:
+            return ""
+        rounded = round(fps)
+        if abs(fps - rounded) < 0.08:
+            return f"{rounded:.0f} FPS"
+        text = f"{fps:.2f}".rstrip("0").rstrip(".")
+        return f"{text} FPS"
+
+    def _apply_measured_fps_text(self, text: str) -> bool:
+        if self._current_title is None:
+            return False
+        self._measured_fps_text = text
+        self._fps_label.set_text(text)
+        if self._fullscreen and hasattr(self, "_fs_fps_label"):
+            self._fs_fps_label.set_text(text)
+        return False
+
+    def _on_fps_measurements(
+        self,
+        _sink: Gst.Element,
+        fps: float,
+        _droprate: float,
+        avgfps: float,
+    ) -> None:
+        value = avgfps if avgfps > 0 else fps
+        if value <= 0:
+            return
+        GLib.idle_add(self._apply_measured_fps_text, self._format_fps_text(value))
 
     # ── Time / seek helpers ──
 
@@ -391,6 +552,33 @@ class PlayerWidget(Gtk.Box):
         ok, pos = self.playbin.query_position(Gst.Format.TIME)
         return pos if ok and pos >= 0 else 0
 
+    def _effective_position(self) -> int:
+        pos = self._query_position()
+        if pos > 0:
+            return pos
+        if self._pending_seek_display_ns >= 0:
+            return self._pending_seek_display_ns
+        if self._duration_ns > 0:
+            frac = self.seek_scale.get_value() / 1000
+            return int(frac * self._duration_ns)
+        return 0
+
+    def _set_position_display(self, pos_ns: int, dur_ns: int | None = None) -> None:
+        pos_ns = max(0, pos_ns)
+        dur = dur_ns if dur_ns is not None else self._duration_ns
+        self.time_current.set_text(_format_time(pos_ns))
+        if self._fs_time_current is not None:
+            self._fs_time_current.set_text(_format_time(pos_ns))
+        if dur <= 0:
+            return
+        frac = min(max(pos_ns / dur, 0.0), 1.0)
+        self.time_total.set_text(_format_time(dur))
+        if self._fs_time_total is not None:
+            self._fs_time_total.set_text(_format_time(dur))
+        self.seek_scale.set_value(frac * 1000)
+        if self._fs_seek_scale is not None:
+            self._fs_seek_scale.set_value(frac * 1000)
+
     def _is_seekable(self) -> bool:
         _, state, _ = self.playbin.get_state(0)
         return state in (Gst.State.PLAYING, Gst.State.PAUSED)
@@ -399,6 +587,10 @@ class PlayerWidget(Gtk.Box):
         if not self._is_seekable():
             return
         position_ns = max(0, position_ns)
+        self._pending_seek_display_ns = position_ns
+        self._pending_seek_deadline_us = GLib.get_monotonic_time() + SEEK_DISPLAY_GRACE_US
+        dur = self._duration_ns or self._query_duration()
+        self._set_position_display(position_ns, dur if dur > 0 else None)
         try:
             self.playbin.seek(
                 1.0,
@@ -459,27 +651,26 @@ class PlayerWidget(Gtk.Box):
             return True
 
         dur = self._query_duration()
+        if dur <= 0:
+            dur = self._duration_ns
         pos = self._query_position()
-        self._duration_ns = dur
-
-        self.time_current.set_text(_format_time(pos))
-        self.time_total.set_text(_format_time(dur))
-
         if dur > 0:
-            frac = (pos / dur) * 1000
-            self.seek_scale.set_value(frac)
-        else:
-            self.seek_scale.set_value(0)
+            self._duration_ns = dur
+
+        if self._pending_seek_display_ns >= 0:
+            if pos <= 0 and self._pending_seek_display_ns > 0:
+                if GLib.get_monotonic_time() < self._pending_seek_deadline_us:
+                    pos = self._pending_seek_display_ns
+                else:
+                    self._pending_seek_display_ns = -1
+                    self._pending_seek_deadline_us = 0
+            else:
+                self._pending_seek_display_ns = -1
+                self._pending_seek_deadline_us = 0
+
+        self._set_position_display(pos, dur if dur > 0 else None)
 
         self._update_stream_stats()
-
-        if self._fs_seek_scale and self._fullscreen:
-            if self._fs_time_current:
-                self._fs_time_current.set_text(_format_time(pos))
-            if self._fs_time_total:
-                self._fs_time_total.set_text(_format_time(dur))
-            if dur > 0:
-                self._fs_seek_scale.set_value((pos / dur) * 1000)
 
         return True
 
@@ -541,13 +732,13 @@ class PlayerWidget(Gtk.Box):
     def _on_skip_back(self, _btn: Gtk.Button | None) -> None:
         if self._current_title is None or not self._is_seekable():
             return
-        pos = self._query_position()
+        pos = self._effective_position()
         self._seek_to(max(0, pos - SEEK_STEP_NS))
 
     def _on_skip_forward(self, _btn: Gtk.Button | None) -> None:
         if self._current_title is None or not self._is_seekable():
             return
-        pos = self._query_position()
+        pos = self._effective_position()
         dur = self._duration_ns or self._query_duration()
         target = pos + SEEK_STEP_NS
         if dur > 0:
@@ -560,13 +751,103 @@ class PlayerWidget(Gtk.Box):
         pct = int(round(self._volume * 100))
         return f"{pct}%"
 
+    def _volume_icon_name(self) -> str:
+        if self._volume <= 0.01:
+            return "audio-volume-muted-symbolic"
+        if self._volume < 0.34:
+            return "audio-volume-low-symbolic"
+        if self._volume < 0.67:
+            return "audio-volume-medium-symbolic"
+        return "audio-volume-high-symbolic"
+
+    def _refresh_volume_widgets(self) -> None:
+        vt = self._vol_text()
+        self.vol_label.set_text(vt)
+        if self._vol_icon is not None:
+            self._vol_icon.set_from_icon_name(self._volume_icon_name(), Gtk.IconSize.MENU)
+        if self._vol_button is not None:
+            self._vol_button.set_tooltip_text(t("volume_control"))
+        if hasattr(self, "_fs_vol_label"):
+            self._fs_vol_label.set_text(vt)
+        if self._fs_vol_icon is not None:
+            self._fs_vol_icon.set_from_icon_name(self._volume_icon_name(), Gtk.IconSize.MENU)
+        if self._fs_vol_button is not None:
+            self._fs_vol_button.set_tooltip_text(t("volume_control"))
+        if self._vol_popover_icon is not None:
+            self._vol_popover_icon.set_from_icon_name(
+                self._volume_icon_name(), Gtk.IconSize.MENU
+            )
+        if self._fs_vol_popover_icon is not None:
+            self._fs_vol_popover_icon.set_from_icon_name(
+                self._volume_icon_name(), Gtk.IconSize.MENU
+            )
+        if self._vol_popover_value is not None:
+            self._vol_popover_value.set_text(vt)
+        if self._fs_vol_popover_value is not None:
+            self._fs_vol_popover_value.set_text(vt)
+        self._sync_volume_scales()
+
+    def _sync_volume_scales(self) -> None:
+        value = int(round(self._volume * 100))
+        self._ignore_volume_scale = True
+        try:
+            if self._vol_scale is not None:
+                self._vol_scale.set_value(value)
+            if self._fs_vol_scale is not None:
+                self._fs_vol_scale.set_value(value)
+        finally:
+            self._ignore_volume_scale = False
+
+    def _set_volume(self, volume: float, *, show_popup: bool = False) -> None:
+        clamped = max(0.0, min(1.5, volume))
+        self._volume = clamped
+        if clamped > 0.01:
+            self._last_nonzero_volume = clamped
+        self.playbin.set_property("volume", self._volume)
+        self._refresh_volume_widgets()
+        if show_popup:
+            self._show_vol_popup()
+
+    def _toggle_mute(self) -> None:
+        if self._volume <= 0.01:
+            restored = self._last_nonzero_volume
+            if restored <= 0.01:
+                restored = max(0.05, get_settings().default_volume / 100)
+            self._set_volume(restored, show_popup=True)
+            return
+        self._last_nonzero_volume = self._volume
+        self._set_volume(0.0, show_popup=True)
+
+    def _on_volume_scale_changed(self, scale: Gtk.Scale) -> None:
+        if self._ignore_volume_scale:
+            return
+        self._set_volume(scale.get_value() / 100)
+
+    def _toggle_volume_popover(self, button: Gtk.Button) -> None:
+        popover = self._fs_vol_popover if button is self._fs_vol_button else self._vol_popover
+        if popover is None:
+            return
+        if popover.get_visible():
+            popover.hide()
+            return
+        if self._fs_vol_popover is not None and popover is not self._fs_vol_popover:
+            self._fs_vol_popover.hide()
+        if self._vol_popover is not None and popover is not self._vol_popover:
+            self._vol_popover.hide()
+        self._sync_volume_scales()
+        popover.show_all()
+        if self._fullscreen and self._fs_controls_revealer is not None:
+            self._fs_controls_revealer.set_reveal_child(True)
+            self._reset_fs_hide_timer()
+
+    def _on_volume_chip_click(self, btn: Gtk.Button) -> None:
+        self._toggle_volume_popover(btn)
+
     def _show_vol_popup(self) -> None:
         vt = self._vol_text()
         if self._fullscreen and hasattr(self, '_fs_vol_popup'):
             self._fs_vol_popup.set_text(vt)
             self._fs_vol_popup.show()
-            if hasattr(self, '_fs_vol_label'):
-                self._fs_vol_label.set_text(vt)
         else:
             self._vol_popup.set_text(vt)
             self._vol_popup.show()
@@ -595,10 +876,7 @@ class PlayerWidget(Gtk.Box):
             else:
                 return False
         step = 0.05
-        self._volume = max(0.0, min(1.5, self._volume + (-dy * step)))
-        self.playbin.set_property("volume", self._volume)
-        self.vol_label.set_text(self._vol_text())
-        self._show_vol_popup()
+        self._set_volume(self._volume + (-dy * step), show_popup=True)
         return True
 
     def _on_button_press(self, _w: Gtk.Widget, event: Gdk.EventButton) -> bool:
@@ -610,27 +888,54 @@ class PlayerWidget(Gtk.Box):
             return True
         return False
 
+    def _on_video_button_press(self, widget: Gtk.Widget, event: Gdk.EventButton) -> bool:
+        if hasattr(widget, "get_can_focus") and widget.get_can_focus():
+            widget.grab_focus()
+        return self._on_button_press(widget, event)
+
+    def _adjust_volume(self, delta: float) -> None:
+        self._set_volume(self._volume + delta, show_popup=True)
+
+    def _set_play_pause_icons(self, paused: bool) -> None:
+        icon_name = (
+            "media-playback-start-symbolic" if paused else "media-playback-pause-symbolic"
+        )
+        tooltip = t("resume") if paused else t("pause")
+        image = Gtk.Image.new_from_icon_name(icon_name, Gtk.IconSize.BUTTON)
+        self.btn_play.set_image(image)
+        self.btn_play.set_tooltip_text(tooltip)
+        if self._fs_pp_btn is not None:
+            self._fs_pp_btn.set_image(
+                Gtk.Image.new_from_icon_name(icon_name, Gtk.IconSize.BUTTON)
+            )
+            self._fs_pp_btn.set_tooltip_text(tooltip)
+
     def _on_play_pause(self, _btn: Gtk.Button | None) -> None:
         if self._current_title is None:
             return
         if self._paused:
             self.playbin.set_state(Gst.State.PLAYING)
-            self.btn_play.set_image(
-                Gtk.Image.new_from_icon_name("media-playback-pause-symbolic", Gtk.IconSize.BUTTON)
-            )
             self._paused = False
         else:
             self.playbin.set_state(Gst.State.PAUSED)
-            self.btn_play.set_image(
-                Gtk.Image.new_from_icon_name("media-playback-start-symbolic", Gtk.IconSize.BUTTON)
-            )
             self._paused = True
+        self._set_play_pause_icons(self._paused)
 
     def _on_stop_click(self, _btn: Gtk.Button) -> None:
         self.stop()
 
     def _on_fs_click(self, _btn: Gtk.Button) -> None:
         self._toggle_fullscreen()
+
+    def _on_prev_item_click(self, _btn: Gtk.Button | None) -> None:
+        if self._current_title is None or self._on_prev_item is None:
+            return
+        self._on_prev_item()
+
+    def _on_next_item_click(self, _btn: Gtk.Button | None) -> None:
+        if self._current_title is None or self._on_next_item is None:
+            return
+        self._on_next_item()
 
     # ── Context menu ──
 
@@ -880,6 +1185,22 @@ class PlayerWidget(Gtk.Box):
         win.set_title(t("app_name"))
         win.connect("delete-event", self._on_fs_delete)
         win.connect("key-press-event", self._on_fs_key)
+        if self._fs_accel_group is None:
+            accel_group = Gtk.AccelGroup()
+            accel_group.connect(
+                Gdk.KEY_space,
+                Gdk.ModifierType(0),
+                Gtk.AccelFlags.VISIBLE,
+                lambda *_args: self._activate_play_pause_accel(),
+            )
+            accel_group.connect(
+                Gdk.KEY_KP_Space,
+                Gdk.ModifierType(0),
+                Gtk.AccelFlags.VISIBLE,
+                lambda *_args: self._activate_play_pause_accel(),
+            )
+            self._fs_accel_group = accel_group
+        win.add_accel_group(self._fs_accel_group)
 
         overlay = Gtk.Overlay()
         stage = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -887,13 +1208,17 @@ class PlayerWidget(Gtk.Box):
 
         fs_event = Gtk.EventBox()
         fs_event.add_events(
-            Gdk.EventMask.SCROLL_MASK
+            Gdk.EventMask.KEY_PRESS_MASK
+            | Gdk.EventMask.SCROLL_MASK
             | Gdk.EventMask.BUTTON_PRESS_MASK
             | Gdk.EventMask.POINTER_MOTION_MASK
         )
+        fs_event.set_can_focus(True)
         fs_event.connect("scroll-event", self._on_scroll)
-        fs_event.connect("button-press-event", self._on_button_press)
+        fs_event.connect("button-press-event", self._on_video_button_press)
+        fs_event.connect("key-press-event", self._on_fs_key)
         fs_event.connect("motion-notify-event", self._on_fs_motion)
+        self._fs_event_box = fs_event
 
         self._fs_video_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self._fs_video_box.set_hexpand(True)
@@ -931,31 +1256,60 @@ class PlayerWidget(Gtk.Box):
         controls_box.pack_start(fs_seek_row, False, False, 0)
 
         # Fullscreen button row
-        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
 
-        btn_rew = make_icon_button("media-seek-backward-symbolic", t("skip_back_short"), css="ctrl-btn")
+        transport = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        transport.get_style_context().add_class("ctrl-cluster")
+        transport.get_style_context().add_class("ctrl-cluster-transport")
+        bar.pack_start(transport, False, False, 0)
+
+        btn_prev = make_icon_button(
+            "media-skip-backward-symbolic", t("previous_content"), css="ctrl-btn-nav"
+        )
+        btn_prev.connect("clicked", self._on_prev_item_click)
+        transport.pack_start(btn_prev, False, False, 0)
+
+        btn_rew = make_icon_button(
+            "media-seek-backward-symbolic",
+            t("skip_back_short"),
+            css="ctrl-btn-small",
+            size=Gtk.IconSize.MENU,
+        )
         btn_rew.connect("clicked", self._on_skip_back)
-        bar.pack_start(btn_rew, False, False, 0)
+        transport.pack_start(btn_rew, False, False, 0)
 
         btn_pp = make_icon_button("media-playback-pause-symbolic", t("pause"), css="ctrl-btn")
         btn_pp.connect("clicked", self._on_play_pause)
-        bar.pack_start(btn_pp, False, False, 0)
+        transport.pack_start(btn_pp, False, False, 0)
         self._fs_pp_btn = btn_pp
 
-        btn_fwd = make_icon_button("media-seek-forward-symbolic", t("skip_forward_short"), css="ctrl-btn")
+        btn_fwd = make_icon_button(
+            "media-seek-forward-symbolic",
+            t("skip_forward_short"),
+            css="ctrl-btn-small",
+            size=Gtk.IconSize.MENU,
+        )
         btn_fwd.connect("clicked", self._on_skip_forward)
-        bar.pack_start(btn_fwd, False, False, 0)
+        transport.pack_start(btn_fwd, False, False, 0)
+
+        btn_next = make_icon_button(
+            "media-skip-forward-symbolic", t("next_content"), css="ctrl-btn-nav"
+        )
+        btn_next.connect("clicked", self._on_next_item_click)
+        transport.pack_start(btn_next, False, False, 0)
 
         btn_stop = make_icon_button("media-playback-stop-symbolic", t("stop"), css="ctrl-btn")
         btn_stop.connect("clicked", self._on_stop_click)
-        bar.pack_start(btn_stop, False, False, 0)
+        transport.pack_start(btn_stop, False, False, 0)
 
         self._fs_title = make_label("", css="fs-title", ellipsize=True)
+        self._fs_title.get_style_context().add_class("ctrl-title-block")
         bar.pack_start(self._fs_title, True, True, 4)
 
         # Fullscreen stream stats
         fs_stats = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         fs_stats.set_valign(Gtk.Align.CENTER)
+        fs_stats.get_style_context().add_class("stats-cluster")
         self._fs_res_label = make_label("", css="stream-stat")
         self._fs_fps_label = make_label("", css="stream-stat")
         self._fs_bitrate_label = make_label("", css="stream-stat")
@@ -964,13 +1318,41 @@ class PlayerWidget(Gtk.Box):
         fs_stats.pack_start(self._fs_bitrate_label, False, False, 0)
         bar.pack_start(fs_stats, False, False, 4)
 
+        utility = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        utility.get_style_context().add_class("ctrl-cluster")
+        utility.get_style_context().add_class("ctrl-cluster-utility")
+        bar.pack_start(utility, False, False, 0)
+
+        fs_vol_button = Gtk.Button()
+        fs_vol_button.get_style_context().add_class("vol-chip-btn")
+        fs_vol_button.set_tooltip_text(t("volume_control"))
+        fs_vol_button.connect("clicked", self._on_volume_chip_click)
+        self._fs_vol_button = fs_vol_button
+
+        fs_vol_chip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        fs_vol_chip.get_style_context().add_class("vol-chip")
+        self._fs_vol_icon = Gtk.Image.new_from_icon_name(
+            self._volume_icon_name(), Gtk.IconSize.MENU
+        )
+        self._fs_vol_icon.get_style_context().add_class("vol-chip-icon")
+        fs_vol_chip.pack_start(self._fs_vol_icon, False, False, 0)
         fs_vol = make_label(self._vol_text(), css="vol-label")
         self._fs_vol_label = fs_vol
-        bar.pack_start(fs_vol, False, False, 0)
+        fs_vol_chip.pack_start(fs_vol, False, False, 0)
+        fs_vol_button.add(fs_vol_chip)
+        utility.pack_start(fs_vol_button, False, False, 0)
+        (
+            self._fs_vol_popover,
+            self._fs_vol_scale,
+            self._fs_vol_popover_icon,
+            self._fs_vol_popover_value,
+        ) = self._build_volume_popover(fs_vol_button)
 
-        btn_exit = make_icon_button("view-restore-symbolic", t("exit_fullscreen"), css="ctrl-btn")
+        btn_exit = make_icon_button(
+            "view-restore-symbolic", t("exit_fullscreen"), css="ctrl-btn-utility"
+        )
         btn_exit.connect("clicked", lambda _: self._exit_fullscreen())
-        bar.pack_start(btn_exit, False, False, 0)
+        utility.pack_start(btn_exit, False, False, 0)
 
         controls_box.pack_start(bar, False, False, 0)
         rev.add(controls_box)
@@ -1008,6 +1390,7 @@ class PlayerWidget(Gtk.Box):
         self._fs_window.fullscreen()
         self._fs_window.present()
         self._fullscreen = True
+        GLib.idle_add(self._grab_fs_focus)
 
         self.btn_fs.set_image(
             Gtk.Image.new_from_icon_name("view-restore-symbolic", Gtk.IconSize.BUTTON)
@@ -1023,6 +1406,7 @@ class PlayerWidget(Gtk.Box):
         self._fs_window.unfullscreen()
         self._fs_window.hide()
         self._fullscreen = False
+        GLib.idle_add(self._grab_inline_focus)
 
         self.btn_fs.set_image(
             Gtk.Image.new_from_icon_name("view-fullscreen-symbolic", Gtk.IconSize.BUTTON)
@@ -1037,11 +1421,47 @@ class PlayerWidget(Gtk.Box):
         self._exit_fullscreen()
         return True
 
-    def _on_fs_key(self, _w: Gtk.Window, event: Gdk.EventKey) -> bool:
-        if event.keyval in (Gdk.KEY_Escape, Gdk.KEY_F11):
+    def _grab_fs_focus(self) -> bool:
+        if not self._fullscreen or not self._fs_window:
+            return False
+        target = None
+        if self.video_widget is not None and self.video_widget.get_can_focus():
+            target = self.video_widget
+        elif self._fs_event_box is not None:
+            target = self._fs_event_box
+        if target is not None:
+            self._fs_window.set_focus(target)
+            target.grab_focus()
+        return False
+
+    def _activate_play_pause_accel(self) -> bool:
+        self._on_play_pause(None)
+        return True
+
+    def _grab_inline_focus(self) -> bool:
+        if self._fullscreen:
+            return False
+        target = None
+        if self.video_widget is not None and hasattr(self.video_widget, "get_can_focus"):
+            if self.video_widget.get_can_focus():
+                target = self.video_widget
+        if target is None:
+            target = self._event_box
+        if target is not None and hasattr(target, "grab_focus"):
+            target.grab_focus()
+        return False
+
+    def _on_playback_key(self, _w: Gtk.Widget, event: Gdk.EventKey) -> bool:
+        if event.keyval == Gdk.KEY_Escape and self._fullscreen:
             self._exit_fullscreen()
             return True
-        if event.keyval == Gdk.KEY_space:
+        if event.keyval in (Gdk.KEY_F11, Gdk.KEY_f, Gdk.KEY_F):
+            self._toggle_fullscreen()
+            return True
+        if event.keyval in (Gdk.KEY_m, Gdk.KEY_M):
+            self._toggle_mute()
+            return True
+        if event.keyval in (Gdk.KEY_space, Gdk.KEY_KP_Space):
             self._on_play_pause(None)
             return True
         if event.keyval in (Gdk.KEY_Left, Gdk.KEY_KP_Left):
@@ -1051,22 +1471,15 @@ class PlayerWidget(Gtk.Box):
             self._on_skip_forward(None)
             return True
         if event.keyval in (Gdk.KEY_Up, Gdk.KEY_KP_Up):
-            self._volume = min(1.5, self._volume + 0.05)
-            self.playbin.set_property("volume", self._volume)
-            self.vol_label.set_text(self._vol_text())
-            if hasattr(self, '_fs_vol_label'):
-                self._fs_vol_label.set_text(self._vol_text())
-            self._show_vol_popup()
+            self._adjust_volume(0.05)
             return True
         if event.keyval in (Gdk.KEY_Down, Gdk.KEY_KP_Down):
-            self._volume = max(0.0, self._volume - 0.05)
-            self.playbin.set_property("volume", self._volume)
-            self.vol_label.set_text(self._vol_text())
-            if hasattr(self, '_fs_vol_label'):
-                self._fs_vol_label.set_text(self._vol_text())
-            self._show_vol_popup()
+            self._adjust_volume(-0.05)
             return True
         return False
+
+    def _on_fs_key(self, _w: Gtk.Window, event: Gdk.EventKey) -> bool:
+        return self._on_playback_key(_w, event)
 
     def _on_fs_motion(self, _w: Gtk.Widget, _e: Gdk.EventMotion) -> bool:
         if self._fs_controls_revealer:
@@ -1092,6 +1505,7 @@ class PlayerWidget(Gtk.Box):
             err, _dbg = msg.parse_error()
             self._stop_position_poll()
             self._set_controls_sensitive(False)
+            self._clear_stream_stats()
             title = self._current_title or t("channel")
             self.playbin.set_state(Gst.State.NULL)
             self._current_title = None
@@ -1111,24 +1525,21 @@ class PlayerWidget(Gtk.Box):
         elif msg.type == Gst.MessageType.EOS:
             self._stop_position_poll()
             self.btn_play.set_sensitive(False)
-            self.btn_rew.set_sensitive(False)
-            self.btn_fwd.set_sensitive(False)
+            self.btn_seek_back.set_sensitive(False)
+            self.btn_seek_fwd.set_sensitive(False)
             if self._on_eos:
                 self._on_eos()
         elif msg.type == Gst.MessageType.STATE_CHANGED and msg.src == self.playbin:
             _old, new, _pend = msg.parse_state_changed()
             if new == Gst.State.PLAYING:
-                self.btn_play.set_image(
-                    Gtk.Image.new_from_icon_name("media-playback-pause-symbolic", Gtk.IconSize.BUTTON)
-                )
                 self._paused = False
+                self._set_play_pause_icons(False)
                 self._start_position_poll()
 
     # ── Public API ──
 
     def play(self, uri: str, title: str, meta: str) -> None:
-        if self._fullscreen:
-            self._exit_fullscreen()
+        keep_fullscreen = self._fullscreen
         self._stop_position_poll()
         self.playbin.set_state(Gst.State.NULL)
         self.playbin.set_property("uri", uri)
@@ -1146,18 +1557,32 @@ class PlayerWidget(Gtk.Box):
         self._paused = False
         self._duration_ns = 0
         self._seeking = False
+        self._pending_seek_display_ns = -1
+        self._pending_seek_deadline_us = 0
+        self._measured_fps_text = ""
 
         self.stack.set_visible_child_name("video")
         self.ctrl_title.set_text(title)
         self.ctrl_meta.set_text(meta)
-        self.btn_play.set_image(
-            Gtk.Image.new_from_icon_name("media-playback-pause-symbolic", Gtk.IconSize.BUTTON)
-        )
+        if self._fs_title is not None and keep_fullscreen:
+            self._fs_title.set_text(title)
+        self._set_play_pause_icons(False)
         self.seek_scale.set_value(0)
         self.time_current.set_text("00:00")
         self.time_total.set_text("00:00")
+        if self._fs_time_current is not None:
+            self._fs_time_current.set_text("00:00")
+        if self._fs_time_total is not None:
+            self._fs_time_total.set_text("00:00")
         self._set_controls_sensitive(True)
         self._start_position_poll()
+        if keep_fullscreen:
+            if self._fs_controls_revealer is not None:
+                self._fs_controls_revealer.set_reveal_child(True)
+                self._reset_fs_hide_timer()
+            GLib.idle_add(self._grab_fs_focus)
+        else:
+            GLib.idle_add(self._grab_inline_focus)
 
     def stop(self) -> None:
         if self._fullscreen:
@@ -1168,9 +1593,9 @@ class PlayerWidget(Gtk.Box):
         self._current_meta = None
         self._paused = False
         self._duration_ns = 0
-        self.btn_play.set_image(
-            Gtk.Image.new_from_icon_name("media-playback-start-symbolic", Gtk.IconSize.BUTTON)
-        )
+        self._pending_seek_display_ns = -1
+        self._pending_seek_deadline_us = 0
+        self._set_play_pause_icons(True)
         self._set_controls_sensitive(False)
         self._clear_stream_stats()
         self.ctrl_title.set_text(t("app_name"))
@@ -1187,9 +1612,7 @@ class PlayerWidget(Gtk.Box):
         self.stack.set_visible_child_name("empty")
 
     def set_default_volume(self, vol: float) -> None:
-        self._volume = max(0.0, min(1.5, vol))
-        self.playbin.set_property("volume", self._volume)
-        self.vol_label.set_text(self._vol_text())
+        self._set_volume(vol)
 
     @property
     def is_playing(self) -> bool:
@@ -1213,4 +1636,6 @@ class PlayerWidget(Gtk.Box):
             GLib.source_remove(self._fs_hide_timer)
         if self._fs_window:
             self._fs_window.destroy()
+        self._pending_seek_display_ns = -1
+        self._pending_seek_deadline_us = 0
         self.playbin.set_state(Gst.State.NULL)

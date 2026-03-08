@@ -50,6 +50,17 @@ class ChannelPanel(Gtk.Box):
 
         self._build()
 
+    @staticmethod
+    def _adjacent_from_list(items: list[object], current_id: str, step: int) -> object | None:
+        for idx, item in enumerate(items):
+            if getattr(item, "id", None) != current_id:
+                continue
+            target_idx = idx + step
+            if 0 <= target_idx < len(items):
+                return items[target_idx]
+            return None
+        return None
+
     def _build(self) -> None:
         self._stack = Gtk.Stack()
         self._stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
@@ -488,6 +499,7 @@ class ChannelPanel(Gtk.Box):
         self._series_meta_label.set_text(t("loading"))
         self._season_combo.remove_all()
         self._episode_store.clear()
+        self._visible_episodes = []
         self._stack.set_visible_child_name("series")
 
     def show_series_error(self, msg: str) -> None:
@@ -565,3 +577,50 @@ class ChannelPanel(Gtk.Box):
         if kind in CONTENT_TYPES:
             self._active_type = kind
             self._refresh_tabs()
+
+    def select_episode(self, episode_id: str) -> SeriesEpisode | None:
+        if not self._series_info:
+            return None
+
+        episode = self._series_info.find_episode(episode_id)
+        if episode is None:
+            return None
+
+        if self._season_combo.get_active_id() != episode.season_number:
+            self._season_combo.set_active_id(episode.season_number)
+        else:
+            self._fill_episodes(episode.season_number)
+
+        for idx, current in enumerate(self._visible_episodes):
+            if current.id != episode_id:
+                continue
+            path = Gtk.TreePath.new_from_string(str(idx))
+            selection = self._episode_tree.get_selection()
+            selection.unselect_all()
+            selection.select_path(path)
+            self._episode_tree.scroll_to_cell(path, None, False, 0.0, 0.0)
+            break
+
+        return episode
+
+    def select_entry(self, entry_id: str) -> CatalogEntry | None:
+        for idx, current in enumerate(self._visible_entries):
+            if current.id != entry_id:
+                continue
+            path = Gtk.TreePath.new_from_string(str(idx))
+            selection = self._catalog_tree.get_selection()
+            selection.unselect_all()
+            selection.select_path(path)
+            self._catalog_tree.scroll_to_cell(path, None, False, 0.0, 0.0)
+            return current
+        return None
+
+    def adjacent_entry(self, entry_id: str, step: int) -> CatalogEntry | None:
+        item = self._adjacent_from_list(self._visible_entries, entry_id, step)
+        return item if isinstance(item, CatalogEntry) else None
+
+    def adjacent_episode(self, episode_id: str, step: int) -> SeriesEpisode | None:
+        if not self._series_info:
+            return None
+        item = self._adjacent_from_list(self._visible_episodes, episode_id, step)
+        return item if isinstance(item, SeriesEpisode) else None

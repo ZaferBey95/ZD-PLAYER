@@ -6,6 +6,7 @@ gi.require_version("Gtk", "3.0")
 
 from gi.repository import Gtk
 
+from .. import __version__
 from ..i18n import LANGUAGES, t
 from ..settings import AppSettings
 
@@ -95,6 +96,16 @@ class SettingsDialog(Gtk.Dialog):
             _setting_row(t("live_output_format"), self.output_combo), False, False, 0
         )
 
+        self.verify_tls_switch = Gtk.Switch()
+        self.verify_tls_switch.set_active(settings.verify_tls)
+        content.pack_start(
+            _setting_row(
+                t("verify_tls"), self.verify_tls_switch,
+                desc=t("verify_tls_desc"),
+            ),
+            False, False, 0,
+        )
+
         self.buffer_combo = Gtk.ComboBoxText()
         self.buffer_combo.get_style_context().add_class("dlg-entry")
         self.buffer_combo.append("low", t("buffer_low"))
@@ -174,7 +185,7 @@ class SettingsDialog(Gtk.Dialog):
         about_text.set_margin_top(4)
         content.pack_start(about_text, False, False, 0)
 
-        ver_label = Gtk.Label(label=f"{t('about_version')}: 1.0")
+        ver_label = Gtk.Label(label=f"{t('about_version')}: {__version__}")
         ver_label.set_xalign(0)
         ver_label.get_style_context().add_class("settings-desc")
         ver_label.set_margin_start(8)
@@ -221,6 +232,7 @@ class SettingsDialog(Gtk.Dialog):
         self.result_settings = AppSettings(
             language=self.lang_combo.get_active_id() or "tr",
             live_output=self.output_combo.get_active_id() or "ts",
+            verify_tls=self.verify_tls_switch.get_active(),
             default_volume=int(self.vol_scale.get_value()),
             buffer_mode=self.buffer_combo.get_active_id() or "normal",
             deinterlace=self.deinterlace_combo.get_active_id() or "auto",
@@ -228,6 +240,7 @@ class SettingsDialog(Gtk.Dialog):
             remember_last_channel=self.remember_switch.get_active(),
             last_channel_id=prev.last_channel_id,
             last_channel_type=prev.last_channel_type,
+            last_series_id=prev.last_series_id,
             last_account_id=prev.last_account_id,
             color_brightness=prev.color_brightness,
             color_contrast=prev.color_contrast,

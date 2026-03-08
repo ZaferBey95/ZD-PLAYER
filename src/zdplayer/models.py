@@ -50,6 +50,13 @@ def _coerce_float_text(value: object) -> str | None:
     return f"{number:.1f}"
 
 
+def _is_direct_media_uri(value: str | None) -> bool:
+    if not value:
+        return False
+    parsed = urlparse(value.strip())
+    return bool(parsed.scheme)
+
+
 @dataclass(slots=True)
 class XtreamAccount:
     id: str
@@ -287,7 +294,7 @@ class CatalogEntry:
         if self.is_series_container:
             raise ValueError("Dizi kaydinin once sezon ve bolumu secilmeli.")
 
-        if self.source_url and self.source_url.startswith(("http://", "https://")):
+        if _is_direct_media_uri(self.source_url):
             return self.source_url
 
         if self.content_type == "live":
@@ -399,7 +406,7 @@ class SeriesEpisode:
         return " - ".join(parts)
 
     def playback_url(self, account: XtreamAccount) -> str:
-        if self.source_url and self.source_url.startswith(("http://", "https://")):
+        if _is_direct_media_uri(self.source_url):
             return self.source_url
         return account.build_stream_url(
             "series",
@@ -501,6 +508,13 @@ class SeriesInfo:
             seasons=seasons,
             episodes_by_season=episodes_by_season,
         )
+
+    def find_episode(self, episode_id: str) -> SeriesEpisode | None:
+        for episodes in self.episodes_by_season.values():
+            for episode in episodes:
+                if episode.id == episode_id:
+                    return episode
+        return None
 
 
 @dataclass(slots=True)

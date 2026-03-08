@@ -19,6 +19,7 @@ class AppSettings:
     remember_last_channel: bool = False
     last_channel_id: str = ""
     last_channel_type: str = ""
+    last_series_id: str = ""
     last_account_id: str = ""
     color_brightness: float = 0.0
     color_contrast: float = 0.0
@@ -59,6 +60,7 @@ def load_settings() -> AppSettings:
                 remember_last_channel=bool(data.get("remember_last_channel", False)),
                 last_channel_id=str(data.get("last_channel_id", "")),
                 last_channel_type=str(data.get("last_channel_type", "")),
+                last_series_id=str(data.get("last_series_id", "")),
                 last_account_id=str(data.get("last_account_id", "")),
                 color_brightness=float(data.get("color_brightness", 0.0)),
                 color_contrast=float(data.get("color_contrast", 0.0)),
